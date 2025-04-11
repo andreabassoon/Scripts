@@ -1,0 +1,113 @@
+function TRPL_Analysis()
+    close all; clc;
+    
+    % Selezione dei file multipli da diverse cartelle
+    filenames = {};
+    filepaths = {};
+    while true
+        [file, path] = uigetfile('*.txt', 'Seleziona i file TRPL (Annulla per terminare)', 'MultiSelect', 'on');
+        if isequal(file, 0)
+            break;
+        end
+        if ischar(file)
+            file = {file};
+        end
+        filenames = [filenames, file];
+        filepaths = [filepaths, repmat({path}, 1, length(file))];
+    end
+    
+    numFiles = length(filenames);
+    if numFiles == 0
+        disp('Nessun file selezionato.');
+        return;
+    end
+    
+    results = cell(numFiles, 3);
+    
+    % Parametri iniziali di default
+    defaultParams = [0.5, 0.5, 250, 2500, 0];
+    fixedParams = false(1,5); % Stato iniziale delle caselle di spunta
+    
+    for i = 1:numFiles
+        while true
+            % Caricamento dati ignorando le intestazioni
+            filePath = fullfile(filepaths{i}, filenames{i});
+            opts = detectImportOptions(filePath, 'NumHeaderLines', 2);
+            dataTable = readtable(filePath, opts);
+            x = dataTable{:,1}; % Tempo
+            y = dataTable{:,2}; % Intensità PL
+            
+            % Sottrazione media primi 10 punti e normalizzazione
+            y = y - mean(y(1:10));
+            y = y / max(y);
+            
+            % Selezione automatica dei dati a partire da y ≈ 1
+            validIdx = find(y >= 0.99, 1, 'first'):length(y);
+            x = x(validIdx);
+            y = y(validIdx);
+            
+            % Definizione funzione di fit
+            decayFunc = @(params, x) params(1) * exp(-x / params(3)) + params(2) * exp(-x / params(4)) + params(5);
+            
+            % Creazione della finestra di input con caselle di spunta per fissare parametri
+            f = figure('Name', 'Parametri di Fit', 'Position', [100 100 400 300]);
+            paramLabels = {'A1:', 'A2:', 't1:', 't2:', 'y0:'};
+            paramFields = zeros(1,5);
+            fixedChecks = zeros(1,5);
+            for j = 1:5
+                uicontrol(f, 'Style', 'text', 'Position', [20 250-40*j 50 20], 'String', paramLabels{j});
+                paramFields(j) = uicontrol(f, 'Style', 'edit', 'Position', [80 250-40*j 100 20], 'String', num2str(defaultParams(j)));
+                fixedChecks(j) = uicontrol(f, 'Style', 'checkbox', 'Position', [200 250-40*j 20 20], 'Value', fixedParams(j));
+            end
+            uicontrol(f, 'Style', 'pushbutton', 'Position', [150 20 100 30], 'String', 'OK', 'Callback', 'uiresume(gcbf)');
+            uiwait(f);
+            for j = 1:5
+                defaultParams(j) = str2double(get(paramFields(j), 'String'));
+            end
+            fixedParams = logical(cell2mat(get(fixedChecks, 'Value')));
+            close(f);
+            
+            % Impostazione bounds per parametri fissi
+            lb = [0, 0, 1, 1, 0]; % Limiti inferiori
+            ub = [1, 1, 1e4, 1e4, 0.1]; % Limiti superiori
+            lb(fixedParams) = defaultParams(fixedParams);
+            ub(fixedParams) = defaultParams(fixedParams);
+            
+            % Fit biesponenziale
+            options = optimset('Display', 'off', 'TolFun', 1e-8, 'TolX', 1e-8, 'MaxIter', 1000);
+            paramsFit = lsqcurvefit(decayFunc, defaultParams, x, y, lb, ub, options);
+            
+            % Calcolo delle frazioni normalizzate
+            A1_norm = paramsFit(1) / (paramsFit(1) + paramsFit(2));
+            A2_norm = paramsFit(2) / (paramsFit(1) + paramsFit(2));
+            
+            % Salvataggio parametri
+            results{i, 1} = filenames{i};
+            results{i, 2} = A1_norm;
+            results{i, 3} = A2_norm;
+            
+            % Plot dati e fit
+            figure;
+            plot(x, y, 'bo', 'DisplayName', 'Dati'); hold on;
+            plot(x, decayFunc(paramsFit, x), 'r-', 'LineWidth', 2, 'DisplayName', 'Fit');
+            xlabel('Tempo (ps)'); ylabel('Intensità normalizzata');
+            title(['Fit TRPL: ' filenames{i}]);
+            legend; grid on;
+            
+            % Casella di dialogo per procedere o modificare i parametri
+            choice = questdlg('Vuoi procedere al fit successivo o modificare i parametri?', 'Opzioni', 'Procedi', 'Modifica Valori', 'Procedi');
+            if strcmp(choice, 'Procedi')
+                break;
+            end
+        end
+    end
+    
+    % Chiedere all'utente dove salvare il file e con che nome
+    [saveFile, savePath] = uiputfile('*.txt', 'Salva risultati come', 'Fit_Results.txt');
+    if isequal(saveFile, 0)
+        disp('Salvataggio annullato.');
+        return;
+    end
+    outputFile = fullfile(savePath, saveFile);
+    writetable(cell2table(results, 'VariableNames', {'Sample', 'A1/(A1+A2)', 'A2/(A1+A2)'}), outputFile, 'Delimiter', 'tab');
+end
